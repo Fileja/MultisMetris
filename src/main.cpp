@@ -1,106 +1,87 @@
 #include <Arduino.h>
+#include <Wire.h> 
+#include <LiquidCrystal_I2C.h>
 #include <math.h>
-const double A0_Amplitude     = 5.0; //Original amplitude of voltage 
-const double A1_Amplitude     = 5.0; //Original amplitude of current 
-const double V_Multiplier     = A0_Amplitude / 1023.0; // Voltage multiplier
-const double A_Multiplier     = A1_Amplitude / 1023.0; // Current multiplier
-const int    cyclesToMeasure  = 1; // The number of cycles to measure
-const int    samplesPerCycle  = 300; // The number of samples per cycle
-const double Freq             = 50 ; // Frequency of sine wave
-const int    maxSamples       = samplesPerCycle * cyclesToMeasure; // The number of sampples in sample cycle
-const int    samplePeriod     = ((1 / Freq) * cyclesToMeasure * 100000) / maxSamples; // Frequency in microseconds of sampling
-int          samples          = 0; // Number of samples taken in sample cycle
-const int    powerMin         = -300;
-const int    powerMax         = 300;
-const int    varMin           = -300;
-const int    varMax           = 300;
-long         start            = 0;
-long         end              = 0;
-double       VFinal[maxSamples];
-double       AFinal[maxSamples];
+
+const double VoltageAmplitude = 25.0;                                                       // Original amplitude of voltage
+const double CurrentAmplitude = 25.0;                                                       // Original amplitude of current
+const double VoltageMultiplier = VoltageAmplitude / 1023.0;                                 // Voltage multiplier
+const double CurrentMultiplier = CurrentAmplitude / 1023.0;                                 // Current multiplier
+const int CyclesToMeasure = 1;                                                              // The number of cycles to measure
+const int SamplesPerCycle = 300;                                                            // The number of samples per cycle
+const double SineWaveFrequency = 50;                                                        // Frequency of sine wave
+const int MaxSamples = SamplesPerCycle * CyclesToMeasure;                                   // The number of samples in sample cycle
+const int SamplePeriod = ((1 / SineWaveFrequency) * CyclesToMeasure * 100000) / MaxSamples; // Frequency in microseconds of sampling
+int Samples = 0;                                                                            // Number of samples taken in sample cycle
+long StartMicros = 0;
+long EndMicros = 0;
+double Voltage[MaxSamples];
+double Current[MaxSamples];
+
+LiquidCrystal_I2C lcd(0x27, 16, 4); // adress , char , lines
 
 void setup() {
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Voltage :"); // 10
+  lcd.setCursor(0, 1);
+  lcd.print("Amperes :"); // 10
+  lcd.setCursor(0, 2);
+  lcd.print("Watts :");   // 7
   Serial.begin(9600);
-  pinMode(5, OUTPUT);
-  pinMode(6, OUTPUT);
+}
+
+// The square root of: (x1^2 + x2^2 + x3^2 ... xn^2) / n
+double SquareAdd(double arr, int SampleCount) {
+  double add = 0;
+  double square = 2;
+  for (int i = 0; i < SampleCount; i++) {
+    add += pow(arr, square);
+  }
+  return sqrt(add / double(SampleCount));
+}
+
+void LCD(float v, float a) {
+  // Lai nerādītu error par unused variable , bet taa pagaidam neizmantojas
+  lcd.setCursor(10, 0);
+  lcd.print(v);
+  lcd.setCursor(10, 1);
+  lcd.print(a);
+  lcd.setCursor(7, 2);
+  // lcd.print(RealPower);
+}
+
+void Calculations() {
+  // RMS calculations
+  double rmsVoltage = SquareAdd(Voltage[Samples], Samples); // Voltage
+  double rmsCurrent = SquareAdd(Current[Samples], Samples); // Amperes
+  LCD(rmsVoltage, rmsCurrent);
+
+  // Power calculations
+  double RealPower = 0;
+  for (int i = 0; i < Samples; i++) {
+    RealPower += (Voltage[Samples] * Current[Samples]);
+  }
+  RealPower /= SamplesPerCycle; // Watts
 }
 
 void loop() {
-  start = micros();
-  VFinal[samples] = (V_Multiplier * double(analogRead(A0)) - A0_Amplitude/2);   // Takes a sample of Voltage and Amperage reading and adds it to the array 
-  AFinal[samples] = (A_Multiplier * double(analogRead(A1)) - A1_Amplitude/2);   // at index samples then adds one to samples.
-  samples++;
+  StartMicros = micros();
+  Voltage[Samples] = (VoltageMultiplier * double(analogRead(A0)) - VoltageAmplitude / 2); // Takes a sample of Voltage and Amperage reading and adds it to the array
+  Current[Samples] = (CurrentMultiplier * double(analogRead(A1)) - CurrentAmplitude / 2); // at index samples then adds one to samples.
+  Samples++;
 
-  Serial.println(VFinal[samples]);
-  
-  if (samples >= maxSamples) {
-    doCalculation(); // Resets nSamples
-    samples = 0;
+  if (Samples >= MaxSamples) {
+    Calculations();
+    Samples = 0;
   } else {
-    end = micros();
-    pause();
+    EndMicros = micros();
+    // check if we have exceeded the sample period.
+    // If we have do not bother delaying.
+    if (EndMicros - StartMicros < SamplePeriod) {
+      delayMicroseconds(SamplePeriod - (EndMicros - StartMicros));
+    }
   }
 }
-
-void pause(){
-  // check if we have exceeded the sample period. 
-  // If we have do not bother delaying.
-  if (end - start < samplePeriod) {
-    delayMicroseconds( samplePeriod - (end - start) ); 
-  }
-}
-
-void doCalculation() {
-  // do RMS calculations
-  double Vrms = squareAdd(VFinal, samples); // Voltage
-  double Arms = squareAdd(AFinal, samples); // Amperes
-/* Serial
-  Serial.print("VRMS: ");
-  Serial.println(Vrms,3);
-  Serial.print("ARMS: ");
-  Serial.println(Arms,3);
-*/
-  //calculate power
-  double RealPower = 0;
-  for (int i = 0; i++; i < samples) {
-    RealPower += (VFinal[samples] * AFinal[samples]);
-  }
-  RealPower /= 300;
-  
-  double ApparentPower = Vrms * Arms;
-  double PowerFactor = RealPower / ApparentPower;
-  double ActivePower = ApparentPower * PowerFactor; // Watts
-}
-/* Precentage hvz kam domats
-void output(double RealPower, double ReactivePower){
-  double powerPercentage = (RealPower - powerMin) / (powerMax - powerMin);
-  double varPercentage   = (ReactivePower - varMin)   / (ReactivePower - varMin);
-
-  if (powerPercentage > 1) {
-    powerPercentage = 1.0;
-  }
-  if (powerPercentage < 0) {
-    powerPercentage = 0;
-  }
-  if (varPercentage > 1) {
-    varPercentage = 1.0;
-  }
-  if (varPercentage < 0) {
-    varPercentage = 0;
-  }
-
-  // power goes to 6
-  // var goes to 9
-  analogWrite(5, powerPercentage * 255); // 980 Hz
-  analogWrite(6, varPercentage   * 255); // 980 Hz
-}
-*/
-// The square root of: (x1^2 + x2^2 + x3^2 ... xn^2) / n
-double squareAdd(double arr[], int length){
-  double add = 0;
-  for (int i=0; i < length; i++) {
-    add += arr[i] * arr[i];
-  }
-  return sqrt(add / double(length));
-}
-  // double ReactivePower = sqrt(ApparentPower*ApparentPower - RealPower*RealPower); Not needed i guess
